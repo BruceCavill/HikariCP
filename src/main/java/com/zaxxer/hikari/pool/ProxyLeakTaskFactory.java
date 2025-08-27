@@ -27,6 +27,7 @@ import java.util.concurrent.ScheduledExecutorService;
 class ProxyLeakTaskFactory
 {
    private ScheduledExecutorService executorService;
+   //连接泄漏检测阈值
    private long leakDetectionThreshold;
 
    ProxyLeakTaskFactory(final long leakDetectionThreshold, final ScheduledExecutorService executorService)

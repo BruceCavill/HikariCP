@@ -202,6 +202,13 @@ abstract class PoolBase
       return new PoolEntry(newConnection(), this, isReadOnly, isAutoCommit);
    }
 
+   /**
+    * 重制连接状态至默认的连接状态
+    * @param connection
+    * @param proxyConnection
+    * @param dirtyBits
+    * @throws SQLException
+    */
    void resetConnectionState(final Connection connection, final ProxyConnection proxyConnection, final int dirtyBits) throws SQLException
    {
       int resetBits = 0;

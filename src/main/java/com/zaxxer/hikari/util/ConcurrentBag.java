@@ -56,25 +56,53 @@ import static java.util.concurrent.locks.LockSupport.parkNanos;
  *
  * @param <T> the templated type to store in the bag
  */
+
+
+//连接获取策略 三层式:先从 threadlocal中获取 在从共享队列中获取 最后在 handoffQueue 中超时等待获取
+//当连接使用完以后 设置连接为not_in_use 先看是否有等待线程 直接交付 到 handoffQueue队列中 如果没等待的线程则 直接放入到threadLocal中
+
+//添加连接 添加连接到 shared list 然后当waiter中>0 时 将连接offer到 handoff队列
+
+//移除连接 将状态设置为removed 从 shared list 中移除 从 threadlocal list 中移除
+/**
+ * 最大限度的减少锁竞争开销
+ * @param <T>
+ */
 public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseable
 {
    private static final Logger LOGGER = LoggerFactory.getLogger(ConcurrentBag.class);
 
+   //共享集合
    private final CopyOnWriteArrayList<T> sharedList;
+   //是否使用弱引用
    private final boolean weakThreadLocals;
 
+
+    //存储每个线程的特定连接 优化线程重复获取和释放的情况
+   //最大连接对象 阻止内存耗尽
    private final ThreadLocal<List<Object>> threadList;
+
    private final IBagStateListener listener;
+
+   //等待线程的连接数
    private final AtomicInteger waiters;
+
    private volatile boolean closed;
 
+   //线程交换队列
+   //避免在线程等待时将连接返回到共享集合的开销
    private final SynchronousQueue<T> handoffQueue;
 
+   //状态机 用于原子设置连接状态
    public interface IConcurrentBagEntry
    {
+      //连接空闲
       int STATE_NOT_IN_USE = 0;
+      //连接使用中
       int STATE_IN_USE = 1;
+      //连接被移除
       int STATE_REMOVED = -1;
+      //连接暂时无法使用
       int STATE_RESERVED = -2;
 
       boolean compareAndSet(int expectState, int newState);
@@ -82,6 +110,7 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
       int getState();
    }
 
+   //在创建连接时获取通知
    public interface IBagStateListener
    {
       void addBagItem(int waiting);
@@ -120,6 +149,7 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
    public T borrow(long timeout, final TimeUnit timeUnit) throws InterruptedException
    {
       // Try the thread-local list first
+      //从threaLocal中获取  bagEntry判空是由于WeakReference
       final var list = threadList.get();
       for (int i = list.size() - 1; i >= 0; i--) {
          final var entry = list.remove(i);
@@ -131,34 +161,44 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
       }
 
       // Otherwise, scan the shared list ... then poll the handoff queue
+      //增加等待线程数
       final int waiting = waiters.incrementAndGet();
       try {
          for (T bagEntry : sharedList) {
             if (bagEntry.compareAndSet(STATE_NOT_IN_USE, STATE_IN_USE)) {
                // If we may have stolen another waiter's connection, request another bag add.
+               //之前等待数>1 抢到了对应的连接
                if (waiting > 1) {
+                  //这里的通知意义？
                   listener.addBagItem(waiting - 1);
                }
                return bagEntry;
             }
          }
+         //未从shared list 中获取到连接
 
+          //当前等待数
          listener.addBagItem(waiting);
 
          timeout = timeUnit.toNanos(timeout);
          do {
             final var start = currentTime();
             final T bagEntry = handoffQueue.poll(timeout, NANOSECONDS);
+            //为空 则已超时了
             if (bagEntry == null || bagEntry.compareAndSet(STATE_NOT_IN_USE, STATE_IN_USE)) {
                return bagEntry;
             }
 
+            //获取到的不为空，但是cas失败（cas失败的情况是什么呢）？
+            //还有超时时间 继续超时等待
+            //这里可以稍后再看
             timeout -= elapsedNanos(start);
          } while (timeout > 10_000);
 
          return null;
       }
       finally {
+         //减少等待线程数
          waiters.decrementAndGet();
       }
    }
@@ -177,9 +217,15 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
       bagEntry.setState(STATE_NOT_IN_USE);
 
       for (var i = 0; waiters.get() > 0; i++) {
+         // 对于状态的判断 其它线程再sharedList中获取到了该连接将其设置为了 STATE_IN_USE
+         // 不判断将丢入一个在使用的连接
+         //将连接丢入 handoffQueue 回顾一下SynchronousQueue queue
          if (bagEntry.getState() != STATE_NOT_IN_USE || handoffQueue.offer(bagEntry)) {
             return;
          }
+
+         //通过park 和yield让出cpu
+
          else if ((i & 0xff) == 0xff) {
             parkNanos(MICROSECONDS.toNanos(10));
          }
@@ -189,6 +235,7 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
       }
 
       final var threadLocalList = threadList.get();
+      //丢入threadLocal中 防止无限增长
       if (threadLocalList.size() < 50) {
          threadLocalList.add(weakThreadLocals ? new WeakReference<>(bagEntry) : bagEntry);
       }
@@ -378,6 +425,7 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
     *
     * @return true if we should use WeakReferences in our ThreadLocals, false otherwise
     */
+   //避免应用重新部署时发生内存泄漏
    private boolean useWeakThreadLocals()
    {
       try {

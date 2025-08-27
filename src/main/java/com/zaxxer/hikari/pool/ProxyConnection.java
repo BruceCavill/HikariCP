@@ -185,6 +185,7 @@ public abstract class ProxyConnection implements Connection
       return sqle;
    }
 
+   //追踪的statement减少
    final synchronized void untrackStatement(final Statement statement)
    {
       openStatements.remove(statement);
@@ -202,6 +203,7 @@ public abstract class ProxyConnection implements Connection
       leakTask.cancel();
    }
 
+   //跟踪打开的连接
    private synchronized <T extends Statement> T trackStatement(final T statement)
    {
       openStatements.add(statement);
@@ -240,6 +242,7 @@ public abstract class ProxyConnection implements Connection
    public final void close() throws SQLException
    {
       // Closing statements can cause connection eviction, so this must run before the conditional below
+      //关闭所有的打开的statements
       closeStatements();
 
       if (delegate != ClosedConnection.CLOSED_CONNECTION) {

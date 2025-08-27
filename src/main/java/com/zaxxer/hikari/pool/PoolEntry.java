@@ -37,10 +37,15 @@ import static com.zaxxer.hikari.util.ClockSource.currentTime;
 final class PoolEntry implements IConcurrentBagEntry
 {
    private static final Logger LOGGER = LoggerFactory.getLogger(PoolEntry.class);
+
+   //state 更新器
    private static final AtomicIntegerFieldUpdater<PoolEntry> stateUpdater;
 
+   //数据库连接
    Connection connection;
+   //最后访问时间
    long lastAccessed;
+   //最后借用时间
    long lastBorrowed;
 
    @SuppressWarnings("FieldCanBeLocal")
@@ -53,7 +58,9 @@ final class PoolEntry implements IConcurrentBagEntry
    private final FastList<Statement> openStatements;
    private final HikariPool hikariPool;
 
+   //只读
    private final boolean isReadOnly;
+   //自动提交
    private final boolean isAutoCommit;
 
    static
